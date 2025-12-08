@@ -16,10 +16,11 @@ from typing import Dict, List, Any
 
 class AEFDataset(Dataset):
     
-    def __init__(self, num_samples: int = 1000, patch_size: int = 128, num_frames: int = 16):
+    def __init__(self, num_samples: int = 1000, patch_size: int = 128, num_frames: int = 16, return_text: bool = False):
         self.num_samples = num_samples
         self.patch_size = patch_size
         self.num_frames = num_frames
+        self.return_text = return_text
         # Only Sentinel-2 for simplicity
         self.input_sources = ["sentinel2"]
         
@@ -47,11 +48,17 @@ class AEFDataset(Dataset):
             input_data[source] = self._generate_source_data(source, num_frames, is_input=True)
         source_data = input_data
         
-        return {
+        item = {
             "source_data": source_data,
             "timestamps": timestamps,  # Only input source timestamps
             "valid_period": (valid_start_ms, valid_end_ms),
         }
+        
+        if self.return_text:
+            # Dummy text for verification
+            item["text"] = f"A satellite image of location {idx}"
+            
+        return item
     
     def _generate_timestamps(self, start_ms: float, end_ms: float, num_frames: int) -> torch.Tensor:
         """Generate random timestamps within period."""
@@ -64,10 +71,10 @@ class AEFDataset(Dataset):
         return torch.rand(num_frames, self.patch_size, self.patch_size, num_channels_from_datasource)
 
 
-def create_aef_dataloader(num_samples: int = 1000, batch_size: int = 4, num_workers: int = 2, num_frames: int = 16, patch_size: int = 128) -> DataLoader:
+def create_aef_dataloader(num_samples: int = 1000, batch_size: int = 4, num_workers: int = 2, num_frames: int = 16, patch_size: int = 128, return_text: bool = False) -> DataLoader:
     """Create AlphaEarth Foundations dataloader with proper collation."""
     
-    dataset = AEFDataset(num_samples=num_samples, patch_size=patch_size, num_frames=num_frames)
+    dataset = AEFDataset(num_samples=num_samples, patch_size=patch_size, num_frames=num_frames, return_text=return_text)
     
     def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Collate function handling variable-length sequences."""
@@ -102,11 +109,16 @@ def create_aef_dataloader(num_samples: int = 1000, batch_size: int = 4, num_work
             padded_timestamps.append(ts)
         collated_timestamps["sentinel2"] = torch.stack(padded_timestamps)
         
-        return {
+        batch_dict = {
             "source_data": collated_sources,
             "timestamps": collated_timestamps,
             "valid_periods": [sample["valid_period"] for sample in batch],
         }
+        
+        if return_text:
+            batch_dict["texts"] = [sample["text"] for sample in batch]
+            
+        return batch_dict
     
     return DataLoader(
         dataset,
@@ -121,15 +133,29 @@ def create_aef_dataloader(num_samples: int = 1000, batch_size: int = 4, num_work
 class AEFNPZDataset(Dataset):
     """
     Dataset that reads pre-extracted chips saved as .npz files.
-    Each NPZ should contain:
-      - sentinel2: (T, H, W, 5)
-      - ts_sentinel2: (T,) in ms
+    Supports multiple sources per paper Table S1:
+    - sentinel2: (T, H, W, 5) - B2, B3, B4, B8, B11
+    - sentinel1: (T, H, W, 5) - VV, VH, HH, HV, angle
+    - landsat8/9: (T, H, W, 7) - B2-B6, B8, B10
+    - gedi: (T, H, W, 101) - RH[0-100]
+    - era5: (T, H, W, 12) - precip, temp, dewpoint, pressure (sum/min/max)
+    - glo30: (1, H, W, 1) - DEM
+    - palsar2: (T, H, W, 3) - HH, HV, lin
+    - grace: (T, H, W, 1) - lwe_thickness
+    - nlcd: (1, H, W, 1) - landcover class
     """
-    def __init__(self, root: str):
+    # Define input sources (used at inference) vs target-only sources
+    INPUT_SOURCES = {'sentinel2', 'sentinel1', 'landsat8', 'landsat9'}
+    ALL_SOURCES = {'sentinel2', 'sentinel1', 'landsat8', 'landsat9', 'gedi', 
+                   'era5', 'glo30', 'palsar2', 'grace', 'nlcd'}
+    
+    def __init__(self, root: str, sources: list = None):
         self.root = Path(root)
         self.files = sorted([p for p in self.root.glob('*.npz')])
         if not self.files:
             raise FileNotFoundError(f"No .npz files found in {root}")
+        # Which sources to load (default: all available)
+        self.sources = sources if sources else list(self.ALL_SOURCES)
 
     def __len__(self) -> int:
         return len(self.files)
@@ -137,23 +163,29 @@ class AEFNPZDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         path = self.files[idx]
         data = np.load(path)
-        # Build dicts
+        
         src = {}
         ts = {}
-        s = "sentinel2"
-        if s in data:
-            arr = data[s].astype(np.float32)
-            src[s] = torch.from_numpy(arr)
-            ts_key = f"ts_{s}"
-            if ts_key in data:
-                ts[s] = torch.from_numpy(data[ts_key].astype(np.float32))
-        # Use a default 1-year valid/support centered at median ts
+        
+        for source in self.sources:
+            if source in data:
+                arr = data[source].astype(np.float32)
+                src[source] = torch.from_numpy(arr)
+                ts_key = f"ts_{source}"
+                if ts_key in data:
+                    ts[source] = torch.from_numpy(data[ts_key].astype(np.float32))
+                elif source in {'glo30', 'nlcd'}:
+                    # Static sources - use default timestamp
+                    ts[source] = torch.tensor([1577836800000.0], dtype=torch.float32)
+        
+        # Compute valid period from timestamps
         if ts:
-            med = float(np.median(np.concatenate([t.numpy() for t in ts.values()])))
+            all_ts = np.concatenate([t.numpy() for t in ts.values() if t.numel() > 0])
+            med = float(np.median(all_ts)) if len(all_ts) > 0 else 1577836800000.0
         else:
             med = 1577836800000.0
         vp = (med - 15552000000.0, med + 15552000000.0)  # +/- 180 days
-        sp = (vp[0], vp[1])
+        
         return {
             "source_data": src,
             "timestamps": ts,

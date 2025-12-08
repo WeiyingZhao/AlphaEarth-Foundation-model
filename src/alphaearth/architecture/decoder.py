@@ -29,7 +29,8 @@ class VonMisesFisherDecoder(nn.Module):
         self.geometry_dim = geometry_dim
         
         # Concentration parameter for von Mises-Fisher distribution
-        self.log_kappa = nn.Parameter(torch.log(torch.tensor(10.0)))
+        # Paper S2.4: fixed kappa = 8e3
+        self.kappa = 8e3  # Fixed, not learnable
         
         # Decoders for each source
         self.source_decoders = nn.ModuleDict()
@@ -100,8 +101,7 @@ class VonMisesFisherDecoder(nn.Module):
         L = embeddings.shape[1]
         
         # Sample from von Mises-Fisher distribution
-        kappa = torch.exp(self.log_kappa)
-        vmf_samples = self.sample_von_mises_fisher(embeddings, kappa, num_samples)
+        vmf_samples = self.sample_von_mises_fisher(embeddings, self.kappa, num_samples)
         
         start_time, end_time = valid_period
         relative_pos = (timestamps - start_time) / (end_time - start_time + 1e-6)

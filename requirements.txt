@@ -34,3 +34,5 @@ flake8>=5.0.0
 mypy>=0.971
 pystac-client>=0.7.5
 requests>=2.31.0
+earthengine-api>=0.1.300
+tqdm>=4.66.0

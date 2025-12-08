@@ -27,8 +27,18 @@ class AEFLoss:
         self.text_weight = text_weight
         
         # Source-specific loss configurations from Table S2
+        # All use L1 except NLCD which uses Cross Entropy
         self.source_configs = {
-            'sentinel2': {'weight': 1.0, 'loss_fn': F.l1_loss},
+            'sentinel2': {'weight': 1.0, 'loss_fn': F.l1_loss, 'shift_inv': False, 'regrid': None},
+            'sentinel1': {'weight': 1.0, 'loss_fn': F.l1_loss, 'shift_inv': False, 'regrid': None},
+            'landsat8': {'weight': 1.0, 'loss_fn': F.l1_loss, 'shift_inv': False, 'regrid': None},
+            'landsat9': {'weight': 1.0, 'loss_fn': F.l1_loss, 'shift_inv': False, 'regrid': None},
+            'palsar2': {'weight': 1.0, 'loss_fn': F.l1_loss, 'shift_inv': False, 'regrid': None},
+            'era5': {'weight': 1.0, 'loss_fn': F.l1_loss, 'shift_inv': False, 'regrid': None},
+            'gedi': {'weight': 1.0, 'loss_fn': F.l1_loss, 'shift_inv': False, 'regrid': None},
+            'grace': {'weight': 0.5, 'loss_fn': F.l1_loss, 'shift_inv': False, 'regrid': 1280},  # 50% weight, regrid to 1280m
+            'glo30': {'weight': 1.0, 'loss_fn': F.l1_loss, 'shift_inv': False, 'regrid': None},
+            'nlcd': {'weight': 0.5, 'loss_fn': F.cross_entropy, 'shift_inv': False, 'regrid': None},  # 50% weight, cross entropy
         }
     
     def reconstruction_loss(self, predictions: Dict[str, torch.Tensor], 

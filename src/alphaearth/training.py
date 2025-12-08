@@ -39,9 +39,28 @@ class Trainer:
         self.optim = torch.optim.Adam(params, lr=lr)
 
         self.output_dir = output_dir
-        # compatibility flags used in the example script
-        self.max_steps = 1000
-        self.warmup_steps = 0
+        # Training schedule per paper S2.3:
+        # Piecewise linear: 0 → 1e-4 over [0, 1e3), then 1e-4 → 0 over [1e3, 1e5]
+        self.max_steps = 100000  # 100k steps as in paper
+        self.warmup_steps = 1000
+        self.base_lr = lr
+        
+    def _get_lr(self, step: int) -> float:
+        """Compute learning rate with warmup and linear decay (paper S2.3)."""
+        if step < self.warmup_steps:
+            # Linear warmup: 0 -> base_lr
+            return self.base_lr * (step / self.warmup_steps)
+        else:
+            # Linear decay: base_lr -> 0
+            decay_steps = self.max_steps - self.warmup_steps
+            remaining = self.max_steps - step
+            return self.base_lr * max(0, remaining / decay_steps)
+            
+    def _update_lr(self, step: int):
+        """Update optimizer learning rate."""
+        lr = self._get_lr(step)
+        for param_group in self.optim.param_groups:
+            param_group['lr'] = lr
 
     def _prepare_reconstruction_targets(self, batch: Dict[str, Any], pred: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -72,6 +91,7 @@ class Trainer:
         data_iter = itertools.cycle(self.dataloader)
 
         for step in range(1, steps + 1):
+            self._update_lr(step)  # Update LR with schedule
             batch = next(data_iter)
             source_data: Dict[str, torch.Tensor] = {
                 k: v.to(self.device) for k, v in batch['source_data'].items()

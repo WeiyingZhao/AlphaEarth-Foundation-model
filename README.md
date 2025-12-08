@@ -1,42 +1,15 @@
 # AlphaEarth Foundations
 
-A PyTorch implementation of the AlphaEarth geospatial foundation model from Google DeepMind, which generates Earth embeddings for global environmental monitoring and analysis.
-Accompanying the paper is a global dataset of embeddings from 2017 to 2024, available through Earth Engine. The goal of these embeddings is to serve as a highly general geospatial representation for a huge amount of downstream applications, without the need for retraining. 
+AlphaEarth Foundations (AEF) is an unofficial PyTorch implementation of the **AlphaEarth Foundations** model. It features a novel **Embedding Field** paradigm designed to generate universal, highly general Earth embeddings for accurate and efficient global environmental monitoring.
 
-> [!NOTE]
-> This model is a work in progress and was not actually trained on the full dataset, it is just a framework that provides a general base for the paper's architecture. The code is simplified compared to the DeepMind's actual implementation (in JAX). 
+## Key Features
 
-### Key parts of the methodology
-
-- **Continuous Time Support**: First EO featurization approach to support continuous time, allowing for temporal interpolation and extrapolation.
-- **Space Time Precision (STP) Architecture**: Multi-resolution encoder with spatial (1/16L), temporal (1/8L), and precision (1/2L) operators - designed to maintain localized representations while also modeling long-distance relationships across time and space. 
-- **von Mises-Fisher Embeddings**: 64-byte embeddings distributed on unit sphere S^63, very compact representation. 
-
-
-## Architecture
-
-### Space Time Precision (STP) Encoder
-
-The STP encoder processes multi-temporal, multi-source data through three simultaneous operators:
-- **Space Operator**: ViT-like spatial self-attention (1/16L resolution)
-- **Time Operator**: Time-axial self-attention (1/8L resolution) 
-- **Precision Operator**: 3x3 convolutions (1/2L resolution)
-
-### Teacher-Student-Text Framework
-
-1. **Teacher Video Embedding Model**: Main model with implicit decoders
-2. **Student Video Embedding Model**: Shares parameters with teacher for contrastive learning
-3. **Text Alignment Model**: Enables text-image contrastive learning
-
-
-## Data Sources
-
-The model is trained on many data sources including:
-- **Optical**: Sentinel-2, Landsat 8/9. *Note: for simplicty, my implementation only supports Sentinel-2, but it should be relatively straightforward to add new datasets to the training*
-- **Radar**: Sentinel-1, PALSAR2
-- **LiDAR**: GEDI
-- **Environmental**: GLO-30, ERA5-Land, GRACE
-- **Annotated/Text**: NLCD, Wikipedia
+- **Space-Time-Precision (STP) Encoder**: Simultaneous modeling of spatial, temporal, and high-frequency details.
+- **Continuous Time Support**: Temporal interpolation and extrapolation using sinusoidal timecodes.
+- **Von Mises-Fisher Embeddings**: 64-byte embeddings distributed on the unit sphere ($S^{63}$) with fixed $\kappa=8000$.
+- **Text-Image Alignment**: CLIP-based Text Adapter for aligning geospatial features with semantic text descriptions.
+- **Multi-Source Support**: Handles **10 data sources** including Optical (Sentinel-2, Landsat), Radar (Sentinel-1, PALSAR-2), LiDAR (GEDI), and Environmental (ERA5, GRACE, GLO-30).
+- **Comprehensive Loss Function**: Implementation of reconstruction, batch uniformity, consistency, and text alignment losses.
 
 ## Installation
 
@@ -46,27 +19,71 @@ git clone https://github.com/brayden-zhang/alphaearth-foundations.git
 cd alphaearth-foundations
 
 # Install dependencies
-uv pip install -r requirements.txt
+pip install -r requirements.txt
 
-# Install the package 
-uv pip install -e .
+# Set PYTHONPATH to include source directory
+export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 ```
 
-How to run a training step:
-```
-python -m alphaearth.run_train
+## Data Preparation
+
+### Google Earth Engine Data Download
+
+This repository includes a robust script to download and prepare training data from Google Earth Engine (GEE). It supports multiple sensors and handles cloud masking, reprojection, and saving to `.npz` format.
+
+**Prerequisites:**
+1. A Google Cloud Project.
+2. Authenticated Earth Engine CLI:
+   ```bash
+   earthengine authenticate
+   ```
+
+**Usage:**
+
+```bash
+python -m alphaearth.data_prep.download_gee_data \
+    --project_id YOUR_GCP_PROJECT_ID \
+    --output_dir ./data/gee_chips \
+    --samples 100 \
+    --workers 4
 ```
 
-## Paper Citation
+This will download aligned chips from Sentinel-2, Sentinel-1, Landsat, GEDI, ERA5, etc., into the specified output directory.
 
-```bibtex
-@misc{brown2025alphaearthfoundationsembeddingfield,
-      title={AlphaEarth Foundations: An embedding field model for accurate and efficient global mapping from sparse label data}, 
-      author={Christopher F. Brown and Michal R. Kazmierski and Valerie J. Pasquarella and William J. Rucklidge and Masha Samsikova and Chenhui Zhang and Evan Shelhamer and Estefania Lahera and Olivia Wiles and Simon Ilyushchenko and Noel Gorelick and Lihui Lydia Zhang and Sophia Alj and Emily Schechter and Sean Askay and Oliver Guinan and Rebecca Moore and Alexis Boukouvalas and Pushmeet Kohli},
-      year={2025},
-      eprint={2507.22291},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2507.22291}, 
-}
+## Training
+
+The training pipeline uses a `Trainer` class that implements the paper's learning rate schedule (warmup + linear decay) and supports multi-modal data loading.
+
+**Run Training (Synthetic Data Loop):**
+```bash
+python src/alphaearth/run_train.py
 ```
+
+**Training Configuration:**
+- **Model Size**: Supports `"small"` (dev/test) and `"large"` (paper spec) configurations.
+- **Data Loading**: Can load from synthetic data generator or pre-downloaded `.npz` files via `AEFNPZDataset`.
+
+## Testing
+
+A comprehensive test suite is included to verify all components, including loss functions, data loaders, and architecture modules.
+
+**Run Tests:**
+```bash
+PYTHONPATH=$PYTHONPATH:$(pwd)/src python src/alphaearth/test_aef.py
+```
+
+## Architecture Details
+
+- **Encoder**: 15 STP blocks (Large config: $d_p=128, d_t=512, d_s=1024$).
+- **Decoder**: Implicit decoders for each source with source-specific loss functions (L1 or Cross-Entropy).
+- **Text Adapter**: Projects CLIP text embeddings to the 64-dim AEF embedding space.
+
+## Reference
+
+Based on the paper:
+> **AlphaEarth Foundations: An embedding field model for accurate and efficient global mapping from sparse label data**  
+> *Brown et al., 2025*  
+> [arXiv:2507.22291](https://arxiv.org/abs/2507.22291)
+
+> [!NOTE]
+> This is an unofficial implementation. While it faithfully reproduces the architecture and training objectives described in the paper, it is a simplified version compared to the original JAX codebase.

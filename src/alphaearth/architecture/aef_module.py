@@ -35,7 +35,7 @@ class TimePooling(nn.Module):
         self.q_proj = nn.Linear(dim, dim)     # to Q
         self.out = nn.Linear(dim, dim)
 
-    def forward(self, feats: torch.Tensor, q: torch.Tensor, mask: torch.Tensor | None = None):
+    def forward(self, feats: torch.Tensor, q: torch.Tensor, mask: Optional[torch.Tensor] = None):
         B, T, H, W, C = feats.shape
         BHW = B * H * W
 
@@ -87,7 +87,7 @@ class TemporalSummarizer(nn.Module):
         self.proj_64 = nn.Linear(feature_dim, embed_dim, bias=False)
 
     def forward(self, feats: torch.Tensor, timestamps: torch.Tensor,
-                valid_periods: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+                valid_periods: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             feats: (B, T, H, W, C)
@@ -142,8 +142,12 @@ class AlphaEarthFoundations(nn.Module):
         self.decode_sources = decode_sources
         self.enable_text_align = enable_text_align
 
-        # Choose dimensions as per paper (S2.4), scaled down 
-        d_p, d_t, d_s, num_blocks = 64, 256, 512, 6
+        # Choose dimensions as per paper (S2.4)
+        # Paper: D_P=128, D_T=512, D_S=1024, 15 STP blocks
+        if model_size == "large":
+            d_p, d_t, d_s, num_blocks = 128, 512, 1024, 15
+        else:  # "small" - for development/testing
+            d_p, d_t, d_s, num_blocks = 64, 256, 512, 6
 
         # Per-source encoders (Preprocessing box in Fig. 2A)
         self.source_encoders = nn.ModuleDict()
