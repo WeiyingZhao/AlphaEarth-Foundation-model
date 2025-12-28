@@ -4,78 +4,83 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AlphaEarth Foundations is a PyTorch implementation of Google DeepMind's geospatial foundation model for generating Earth embeddings (64D vectors on unit sphere S^63) from multi-temporal satellite imagery. This is a framework/reference implementation - not fully trained on the complete dataset.
+AlphaEarth Foundations (AEF) - Unofficial PyTorch implementation of the AlphaEarth Foundations model for generating universal Earth embeddings from multi-source satellite imagery. Based on the paper "AlphaEarth Foundations: An embedding field model for accurate and efficient global mapping from sparse label data" (Brown et al., 2025).
 
-## Build and Development Commands
+Key features:
+- Von Mises-Fisher embeddings: 64-byte embeddings on unit sphere (S^63) with κ=8000
+- Multi-source support: Sentinel-2, Sentinel-1, Landsat, GEDI, ERA5, GRACE, GLO-30, PALSAR-2, NLCD
+- Space-Time-Precision (STP) encoder with 15 blocks for simultaneous spatial/temporal/high-frequency modeling
+- CLIP-based text adapter for text-image alignment
+
+## Commands
 
 ```bash
-# Install dependencies (uses uv package manager)
-uv pip install -r requirements.txt
-uv pip install -e .
+# Setup
+pip install -r requirements.txt
+export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 
-# Run training (sanity check with synthetic data)
-python -m alphaearth.run_train
+# Training (synthetic data)
+python src/alphaearth/run_train.py
 
-# Testing and linting
-pytest                  # Unit tests
-black .                 # Code formatting
-flake8 .               # Linting
-mypy src/              # Type checking
+# Run tests
+PYTHONPATH=$PYTHONPATH:$(pwd)/src python src/alphaearth/test_aef.py
+# Or with pytest
+python -m pytest src/alphaearth/test_aef.py -v
+
+# Download GEE data
+python -m alphaearth.data_prep.download_gee_data \
+    --project_id YOUR_GCP_PROJECT_ID \
+    --output_dir ./data/gee_chips \
+    --samples 100 \
+    --workers 4
 ```
 
 ## Architecture
 
-### Core Processing Pipeline
-
 ```
-Input: source_data (B,T,H,W,C) + timestamps (B,T) + valid_periods (B,2)
-    ↓
-IndividualSourceEncoder → per-source projection
-    ↓
-STPEncoder (15 blocks) → Space/Time/Precision multi-resolution processing
-    ↓
-TemporalSummarizer → 64D embeddings on S^63
-    ↓
-VonMisesFisherDecoder → source reconstructions
-```
-
-### Key Components
-
-| Module | Location | Purpose |
-|--------|----------|---------|
-| `AlphaEarthFoundations` | `architecture/aef_module.py` | Main model class with teacher-student branches |
-| `STPEncoder` | `architecture/encoder.py` | Multi-resolution encoder with 3 pathways |
-| `STPBlock` | `architecture/STPBlock.py` | Single block with Space/Time/Precision operators |
-| `AEFLoss` | `loss_function.py` | Combined loss: reconstruction + uniformity + consistency + text |
-| `Trainer` | `training.py` | Training loop with Adam optimizer |
-| `AEFDataset` | `data.py` | Synthetic data generator for testing |
-
-### STP Encoder Architecture
-
-Three simultaneous pathways with information exchange via Laplacian pyramid:
-- **Space Operator** (`stp_operators.py`): ViT-style spatial attention at 1/16 resolution
-- **Time Operator** (`stp_operators.py`): Temporal attention with sinusoidal encoding at 1/8 resolution
-- **Precision Operator** (`stp_operators.py`): 3x3 convolutions at 1/2 resolution
-
-### Loss Function Weights (Equation 3)
-
-```python
-total = 1.0 * reconstruction + 0.05 * uniformity + 0.02 * consistency + 0.001 * text
+src/alphaearth/
+├── architecture/
+│   ├── aef_module.py        # Main AlphaEarthFoundations model class
+│   ├── encoder.py           # STPEncoder - Space-Time-Precision encoder
+│   ├── STPBlock.py          # Individual STP block implementation
+│   ├── decoder.py           # VonMisesFisherDecoder for reconstruction
+│   ├── encoder_utils.py     # IndividualSourceEncoder, SinusoidalTimeEncoding, SummaryPeriodEncoder
+│   ├── text_adapter.py      # CLIP-based TextAdapter for text-image alignment
+│   ├── stp_operators.py     # STP operators (attention, FFN)
+│   └── laplacian_pyramid_exchange.py  # LearnedSpatialResampling between pathways
+├── data.py                  # AEFDataset (synthetic), AEFNPZDataset (pre-extracted chips)
+├── training.py              # Trainer class with LR schedule (warmup + linear decay)
+├── loss_function.py         # AEFLoss: reconstruction + uniformity + consistency + text
+└── run_train.py             # Training entry point
 ```
 
-## Data Flow
+## Core Concepts
 
-- **Input**: Sentinel-2 imagery (5 bands: B2, B3, B4, B8, B11) at 10m resolution
-- **Temporal**: Variable-length sequences, timestamps in milliseconds
-- **Output**: 64D unit vectors (von Mises-Fisher distribution on S^63)
+**Three-Pathway STP Encoder**: Space (1/16L, d_s=1024), Time (1/8L, d_t=512), Precision (1/2L, d_p=128) pathways process features at different resolutions, exchanging information via learned spatial resampling.
 
-### STAC Data Ingestion
+**Model Sizes**:
+- `"small"`: d_p=64, d_t=256, d_s=512, 6 blocks (dev/testing)
+- `"large"`: d_p=128, d_t=512, d_s=1024, 15 blocks (paper spec)
 
-`src/utils/stac_ingest.py` provides tools for fetching real Sentinel-2 data:
-- Queries AWS Earth Search API
-- Downloads COG tiles, resamples to 128x128 patches
-- Outputs .npz files for `AEFNPZDataset`
+**Loss Components** (Equation 3):
+- Reconstruction: L1 for continuous sources, CrossEntropy for categorical (NLCD)
+- Batch Uniformity (b=0.05): Embeddings uniformly distributed on S^63
+- Consistency (c=0.02): Teacher-student with input perturbations
+- Text Alignment (d=0.001): CLIP-style contrastive loss
 
-## Extending for Downstream Tasks
+**Data Format**:
+- Input tensors: `(B, T, H, W, C)` with timestamps `(B, T)` in milliseconds
+- Valid period: `(start_ms, end_ms)` tuple defining summary time range
+- NPZ chips from `AEFNPZDataset` contain per-source arrays with `ts_{source}` timestamps
 
-`src/extending-aef-for-dataset-generation/` contains patterns for using embeddings with simple classifiers (RF, GBT, LogReg) for tasks like vegetation type classification.
+## Key Patterns
+
+**Forward Pass** (`aef_module.py:240`):
+1. Per-source encoding → concatenate along channels
+2. STP encoder produces features at precision resolution
+3. TemporalSummarizer pools across time → 64D unit vectors
+4. VonMisesFisherDecoder reconstructs observations
+
+**Teacher-Student** (`aef_module.py:187`): Student receives perturbed inputs (random frame drops, half-year drops, source drops) to learn robust embeddings.
+
+**Training** (`training.py:88`): Piecewise linear LR schedule: 0→1e-4 over [0, 1k), then 1e-4→0 over [1k, 100k].
